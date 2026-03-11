@@ -18,6 +18,11 @@ from astropy.table import Table, hstack, Column
 from astropy.wcs import WCS
 from tglc.ffi import tic_advanced_search_position_rows, convert_gaia_id
 
+try:
+    from tesscube import TESSCube
+except ImportError:
+    print('***tesscube does not exist, will fail if size > 99***')
+
 if not sys.warnoptions:
     warnings.simplefilter("ignore")
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -150,31 +155,50 @@ class Source_cut(object):
         with _dot_wait('Crossmatching TIC -> Gaia DR3 (this may take a while)'):
             self.tic = convert_gaia_id(catalogdata_tic)
         sector_table = Tesscut.get_sectors(coordinates=coord)
-        if len(sector_table) == 0:
-            warnings.warn('TESS has not observed this position yet :(')
-        wait_note = 'later sectors with 200s cadence can take ~20 minutes'
-        if sector is None:
-            wait_message = f'Requesting Tesscut cutouts (all sectors). Waiting on MAST response ({wait_note})'
-            with _dot_wait(wait_message):
-                hdulist = Tesscut.get_cutouts(coordinates=coord, size=self.size, product=ffi)
-        elif sector == 'first':
-            wait_message = f'Requesting Tesscut cutouts (first sector). Waiting on MAST response ({wait_note})'
-            with _dot_wait(wait_message):
-                hdulist = Tesscut.get_cutouts(
-                    coordinates=coord, size=self.size, product=ffi, sector=sector_table['sector'][0]
-                )
-            sector = sector_table['sector'][0]
-        elif sector == 'last':
-            wait_message = f'Requesting Tesscut cutouts (last sector). Waiting on MAST response ({wait_note})'
-            with _dot_wait(wait_message):
-                hdulist = Tesscut.get_cutouts(
-                    coordinates=coord, size=self.size, product=ffi, sector=sector_table['sector'][-1]
-                )
-            sector = sector_table['sector'][-1]
+        if self.size > 30:
+            #Use AWS to get the TPF~
+            hdulist = []
+            if sector is None:
+                for i in range(len(sector_table)):
+                    cube = TESSCube(sector=sector_table['sector'].data[0], camera=sector_table['camera'].data[0], ccd=sector_table['ccd'].data[0])
+                    hdulist.append( cube.get_tpf(coord, shape=(self.size, self.size)) )
+            elif sector == 'first':
+                cube = TESSCube(sector=sector_table['sector'][0].data[0], camera=sector_table['camera'][0].data[0], ccd=sector_table['ccd'][0].data[0])
+                hdulist.append( cube.get_tpf(coord, shape=(self.size, self.size)) )
+                sector = sector_table['sector'][0]
+            elif sector == 'last':
+                cube = TESSCube(sector=sector_table['sector'][-1].data[0], camera=sector_table['camera'][-1].data[0], ccd=sector_table['ccd'][-1].data[0])
+                hdulist.append( cube.get_tpf(coord, shape=(self.size, self.size)) )
+                sector = sector_table['sector'][-1]
+            else:
+                cube = TESSCube(sector=sector, camera=sector_table[sector_table['sector']==sector]['camera'].data[0], ccd=sector_table[sector_table['sector']==sector]['ccd'].data[0])
+                hdulist.append( cube.get_tpf(coord, shape=(self.size, self.size)) )
         else:
-            wait_message = f'Requesting Tesscut cutouts (sector {sector}). Waiting on MAST response ({wait_note})'
-            with _dot_wait(wait_message):
-                hdulist = Tesscut.get_cutouts(coordinates=coord, size=self.size, product=ffi, sector=sector)
+            if len(sector_table) == 0:
+                warnings.warn('TESS has not observed this position yet :(')
+            wait_note = 'later sectors with 200s cadence can take ~20 minutes'
+            if sector is None:
+                wait_message = f'Requesting Tesscut cutouts (all sectors). Waiting on MAST response ({wait_note})'
+                with _dot_wait(wait_message):
+                    hdulist = Tesscut.get_cutouts(coordinates=coord, size=self.size, product=ffi)
+            elif sector == 'first':
+                wait_message = f'Requesting Tesscut cutouts (first sector). Waiting on MAST response ({wait_note})'
+                with _dot_wait(wait_message):
+                    hdulist = Tesscut.get_cutouts(
+                        coordinates=coord, size=self.size, product=ffi, sector=sector_table['sector'][0]
+                    )
+                sector = sector_table['sector'][0]
+            elif sector == 'last':
+                wait_message = f'Requesting Tesscut cutouts (last sector). Waiting on MAST response ({wait_note})'
+                with _dot_wait(wait_message):
+                    hdulist = Tesscut.get_cutouts(
+                        coordinates=coord, size=self.size, product=ffi, sector=sector_table['sector'][-1]
+                    )
+                sector = sector_table['sector'][-1]
+            else:
+                wait_message = f'Requesting Tesscut cutouts (sector {sector}). Waiting on MAST response ({wait_note})'
+                with _dot_wait(wait_message):
+                    hdulist = Tesscut.get_cutouts(coordinates=coord, size=self.size, product=ffi, sector=sector)
         self.catalogdata = catalogdata
         self.sector_table = sector_table
         self.camera = int(sector_table[0]['camera'])
