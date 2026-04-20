@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from multiprocessing import Pool
 from functools import partial
 from tglc.target_lightcurve import epsf
-from tglc.ffi_cut import ffi_cut, _dot_wait
+from tglc.ffi_cut import ffi_cut, _dot_wait, Gaia
 from astroquery.mast import Catalogs
 import astropy.units as u
 from astropy.coordinates import SkyCoord
@@ -32,7 +32,7 @@ controller = ThreadpoolController()
 @controller.wrap(limits=1, user_api='blas')
 def tglc_lc(target='TIC 264468702', local_directory='', size=90, save_aper=True, limit_mag=16, get_all_lc=False,
             first_sector_only=False, last_sector_only=False, sector=None, prior=None, transient=None, ffi='SPOC',
-            mast_timeout=3600):
+            mast_timeout=3600, gaia_tap_server="https://gea.esac.esa.int/tap-server/tap"):
     '''
     Generate light curve for a single target.
 
@@ -114,13 +114,14 @@ def tglc_lc(target='TIC 264468702', local_directory='', size=90, save_aper=True,
                 ).to_pandas()
                 if ticvals.shape[0] > 1:
                     ticvals = ticvals[ticvals.ID.astype(int).isin([TIC_ID])].reset_index(drop=True)
-                tmpgaiavals = TapPlus(url="https://gea.esac.esa.int/tap-server/tap").launch_job(
-                    "SELECT TOP 1 * FROM gaiadr3.dr2_neighbourhood WHERE dr2_source_id = {}".format(
-                        ticvals.loc[0, 'GAIA'])).get_results().to_pandas()
-                gaiavals = TapPlus(url="https://gea.esac.esa.int/tap-server/tap").launch_job(
-                    "SELECT TOP 1 * FROM gaiadr3.gaia_source WHERE source_id = {}".format(
-                        tmpgaiavals.loc[0, 'dr3_source_id'])).get_results().to_pandas()
-            dr2_id = tmpgaiavals.loc[0, 'dr2_source_id']
+                gaiavals = TapPlus(url=gaia_tap_server).launch_job(
+                    "SELECT dr3.*,dr2.dr2_source_id FROM {0}.gaia_source AS dr3 INNER JOIN " \
+                    "{0}.dr2_neighbourhood AS dr2 ON dr3.source_id = dr2.dr3_source_id WHERE " \
+                    "dr2.dr2_source_id = {1}".format(Gaia.MAIN_GAIA_TABLE.split('.')[0],ticvals.loc[0, 'GAIA'])).get_results().to_pandas()
+            if 'designation'.upper() not in gaiavals:
+                gaiavals['designation'.upper()] = gaiavals['designation'].values
+                gaiavals['source_id'.upper()] = gaiavals['source_id'].values
+            dr2_id = gaiavals.loc[0, 'dr2_source_id']
             dr3_designation = gaiavals.loc[0, 'designation'.upper()]
             print(f'DR2 source_id: {dr2_id}; DR3 designation: {dr3_designation}')
             name = f'{dr3_designation}'
@@ -173,7 +174,8 @@ def tglc_lc(target='TIC 264468702', local_directory='', size=90, save_aper=True,
             print(f'Downloading Sector {sector_table["sector"][j]} (product={ffi}).')
             source = ffi_cut(target=target, size=size, local_directory=local_directory,
                              sector=sector_table['sector'][j],
-                             limit_mag=limit_mag, transient=transient, ffi=ffi, mast_timeout=mast_timeout)
+                             limit_mag=limit_mag, transient=transient, ffi=ffi, mast_timeout=mast_timeout,
+                             gaia_tap_server=gaia_tap_server.split('tap')[0])
             epsf(source, factor=2, sector=source.sector, target=target, local_directory=local_directory,
                  name=name, limit_mag=limit_mag, save_aper=save_aper, prior=prior, ffi=ffi)
     else:

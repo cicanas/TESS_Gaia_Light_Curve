@@ -13,6 +13,7 @@ from os.path import exists
 from astroquery.gaia import Gaia
 from astroquery.mast import Tesscut
 from astroquery.mast import Catalogs
+from astroquery.utils.tap.core import TapPlus
 from astropy.coordinates import SkyCoord
 from astropy.table import Table, hstack, Column
 from astropy.wcs import WCS
@@ -58,7 +59,7 @@ def _dot_wait(message, interval=0.6, done_format=None):
 
 class Source_cut(object):
     def __init__(self, name, size=50, sector=None, cadence=None, limit_mag=None, transient=None, ffi='TICA',
-                 mast_timeout=3600):
+                 mast_timeout=3600, gaia_tap_server = "https://gea.esac.esa.int/"):
         """
         Source_cut object that includes all data from TESS and Gaia DR3
         :param name: str, required
@@ -137,12 +138,41 @@ class Source_cut(object):
         if target_designation:
             print(f'Target Gaia: {target_designation}')
         with _dot_wait('Querying Gaia DR3 cone search'):
-            catalogdata = Gaia.cone_search_async(
-                coord,
-                radius=radius,
-                columns=['DESIGNATION', 'phot_g_mean_mag', 'phot_bp_mean_mag',
-                         'phot_rp_mean_mag', 'ra', 'dec', 'pmra', 'pmdec']
-            ).get_results()
+            try:
+                catalogdata = Gaia.cone_search_async(
+                    coord,
+                    radius=radius,
+                    columns=['DESIGNATION', 'phot_g_mean_mag', 'phot_bp_mean_mag',
+                            'phot_rp_mean_mag', 'ra', 'dec', 'pmra', 'pmdec']
+                ).get_results()
+            except:
+                query = """
+                SELECT
+                  {row_limit}
+                  {columns},
+                  DISTANCE(
+                    POINT('ICRS', {ra_column}, {dec_column}),
+                    POINT('ICRS', {ra}, {dec})
+                  ) AS dist
+                FROM
+                  {table_name}
+                WHERE
+                  1 = CONTAINS(
+                    POINT('ICRS', {ra_column}, {dec_column}),
+                    CIRCLE('ICRS', {ra}, {dec}, {radius})
+                  )
+                ORDER BY
+                  dist ASC
+                """.format(**{'ra_column': 'ra',
+                              'row_limit': "TOP {0}".format(Gaia.ROW_LIMIT) if Gaia.ROW_LIMIT > 0 else "",
+                              'dec_column': 'dec', 
+                              'columns': ', '.join(['DESIGNATION', 'phot_g_mean_mag', 'phot_bp_mean_mag','phot_rp_mean_mag', 'ra', 'dec', 'pmra', 'pmdec']),
+                              'ra': ra, 'dec': dec,
+                              'radius': radius.value,
+                              'table_name': Gaia.MAIN_GAIA_TABLE})
+                catalogdata = TapPlus(url=gaia_tap_server+'tap').launch_job_async(query).get_results().to_pandas()
+                if 'designation'.upper() not in catalogdata:
+                    catalogdata['designation'.upper()] = catalogdata['designation'].values
         print(f'Found {len(catalogdata)} Gaia DR3 objects.')
         with _dot_wait('Querying TIC around target'):
             catalogdata_tic = tic_advanced_search_position_rows(
@@ -153,9 +183,9 @@ class Source_cut(object):
             )
         print(f'Found {len(catalogdata_tic)} TIC objects.')
         with _dot_wait('Crossmatching TIC -> Gaia DR3 (this may take a while)'):
-            self.tic = convert_gaia_id(catalogdata_tic)
+            self.tic = convert_gaia_id(catalogdata_tic,gaia_tap_server=gaia_tap_server+'tap')
         sector_table = Tesscut.get_sectors(coordinates=coord)
-        if self.size > 30:
+        if self.size > 99:
             #Use AWS to get the TPF~
             hdulist = []
             if sector is None:
@@ -371,7 +401,7 @@ class Source_cut_pseudo(object):
 
 
 def ffi_cut(target='', local_directory='', size=90, sector=None, limit_mag=None, transient=None, ffi='TICA',
-            mast_timeout=3600):
+            mast_timeout=3600, gaia_tap_server = "https://gea.esac.esa.int/"):
     """
     Function to generate Source_cut objects
     :param target: string, required
@@ -401,6 +431,6 @@ def ffi_cut(target='', local_directory='', size=90, sector=None, limit_mag=None,
     else:
         with open(f'{local_directory}source/{source_name}.pkl', 'wb') as output:
             source = Source_cut(target, size=size, sector=sector, limit_mag=limit_mag, transient=transient, ffi=ffi,
-                                mast_timeout=mast_timeout)
+                                mast_timeout=mast_timeout, gaia_tap_server=gaia_tap_server)
             pickle.dump(source, output, pickle.HIGHEST_PROTOCOL)
     return source

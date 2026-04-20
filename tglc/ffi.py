@@ -15,6 +15,7 @@ from astropy.io import fits
 from astropy.table import Table, hstack, vstack, unique, Column
 from astropy.wcs import WCS
 from astroquery.gaia import Gaia
+from astroquery.utils.tap.core import TapPlus
 from scipy import ndimage
 from tqdm import tqdm, trange
 
@@ -80,7 +81,7 @@ def tic_advanced_search_position_rows(ra=1., dec=1., radius=0.5, limit_mag=16):
     return mast_json2table(out_data)
 
 
-def convert_gaia_id(catalogdata_tic):
+def convert_gaia_id(catalogdata_tic,gaia_tap_server="https://gea.esac.esa.int/"):
     query = """
             SELECT dr2_source_id, dr3_source_id
             FROM gaiadr3.dr2_neighbourhood
@@ -91,12 +92,19 @@ def convert_gaia_id(catalogdata_tic):
     # np.save('gaia_array.npy', gaia_array)
     segment = (len(gaia_array) - 1) // 10000
     gaia_tuple = tuple(gaia_array[:10000])
-    results = Gaia.launch_job_async(query.format(gaia_ids=gaia_tuple)).get_results()
+    try:
+        results = Gaia.launch_job_async(query.format(gaia_ids=gaia_tuple)).get_results()
+    except:
+        results = TapPlus(url=gaia_tap_server).launch_job_async(query.format(gaia_ids=gaia_tuple)).get_results()
     # np.save('result.npy', np.array(results))
     for i in range(segment):
         gaia_array_cut = gaia_array[((i+1)*10000):((i+2)*10000)]
         gaia_tuple_cut = tuple(gaia_array_cut)
-        results = vstack([results, Gaia.launch_job_async(query.format(gaia_ids=gaia_tuple_cut)).get_results()])
+        try:
+            results = vstack([results, Gaia.launch_job_async(query.format(gaia_ids=gaia_tuple_cut)).get_results()])
+        except:
+            results = vstack([results,
+                              TapPlus(url=gaia_tap_server).launch_job_async(query.format(gaia_ids=gaia_tuple)).get_results()])
     tic_ids = []
     for j in range(len(results)):
         tic_ids.append(int(catalogdata_tic['ID'][np.where(catalogdata_tic['GAIA'] == str(results['dr2_source_id'][j]))][0]))
